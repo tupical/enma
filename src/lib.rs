@@ -27,6 +27,7 @@
 
 pub mod decision;
 pub mod directive;
+pub mod from_sensing;
 pub mod id;
 pub mod link;
 
