@@ -20,11 +20,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use taskagent_domain::Actor;
-use taskagent_shared::Timestamp;
-
+use crate::actor::Actor;
 use crate::id::DirectiveId;
 use crate::link::Link;
+use crate::time::Timestamp;
 
 /// Which kind of direction a [`Directive`] expresses. The wire strings are
 /// the charter's primitive names, so a stored directive reads as
@@ -133,7 +132,7 @@ impl NewDirective {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::time;
+    use crate::time;
 
     #[test]
     fn kind_round_trips_via_string() {

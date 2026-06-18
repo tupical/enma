@@ -13,11 +13,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use taskagent_domain::Actor;
-use taskagent_shared::Timestamp;
-
+use crate::actor::Actor;
 use crate::id::DecisionId;
 use crate::link::Link;
+use crate::time::Timestamp;
 
 /// An alternative that was considered but not chosen. Recording the
 /// rejected options is what makes a decision auditable later: "why not X?"
@@ -139,7 +138,7 @@ impl NewDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::time;
+    use crate::time;
 
     fn sample() -> NewDecision {
         NewDecision {

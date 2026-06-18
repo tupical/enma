@@ -9,12 +9,13 @@
 //!
 //! Decisions does not own Sensemaking artifacts or Plans, so the targets are
 //! the ids those layers already mint: a free-form Sensemaking reference and
-//! the core `PlanId` / `ProjectId` / `TaskId`. This keeps the link a pointer,
-//! not a fan-out into other layers' internals.
+//! local newtypes for `PlanId` / `ProjectId` / `TaskId` that carry the same
+//! prefix convention as the taskagent originals.  mcpbox casts between them
+//! when wiring — the underlying `Uuid` is identical.
 
 use serde::{Deserialize, Serialize};
 
-use taskagent_shared::{PlanId, ProjectId, TaskId};
+use crate::shared_ids::{PlanId, ProjectId, TaskId};
 
 /// Where a decision (or directive) points, in either direction along the
 /// pipeline. The direction is implied by the variant: sensemaking is what a
@@ -61,5 +62,14 @@ mod tests {
         let back: Link = serde_json::from_str(&json).unwrap();
         assert_eq!(back, l);
         assert_eq!(l.kind(), "sensemaking");
+    }
+
+    #[test]
+    fn plan_link_round_trips() {
+        let id = PlanId::new();
+        let l = Link::Plan { id };
+        let json = serde_json::to_string(&l).unwrap();
+        let back: Link = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, l);
     }
 }

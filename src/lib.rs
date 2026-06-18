@@ -18,26 +18,25 @@
 //! - Decisions **never executes**. It only *fixes the choice* — nothing here
 //!   schedules, runs, or mutates a plan. Realising a decision is Planning's
 //!   and Actions' job.
-//! - These are pure domain primitives: no I/O, no async. Unlike its
-//!   AI-operation siblings (`intake-oss`, `planning-oss`, `sensemaking-oss`)
-//!   this crate has no dependency on `taskagent-ai-infra`.
-//! - All JSON is serde-derived; ids and `Timestamp` come from the shared
-//!   crate (consumed read-only via the `vendor/oss` symlink), and the
-//!   [`Actor`](taskagent_domain::Actor) type is reused rather than redefined.
+//! - These are pure domain primitives: no I/O, no async. This crate has no
+//!   dependency on taskagent or sibling `*_oss` layers.
+//! - All JSON is serde-derived; ids, `Timestamp`, and `Actor` are local
+//!   primitives — mcpbox maps them to/from taskagent types when wiring.
+//! - Adapters from sensemaking (`draft_from_sensing`) live in mcpbox, not
+//!   here, to keep this crate free of sibling-layer dependencies.
 
+pub mod actor;
 pub mod decision;
 pub mod directive;
-pub mod from_sensing;
 pub mod id;
 pub mod link;
+pub mod shared_ids;
+pub mod time;
 
+pub use actor::{Actor, ActorKind};
 pub use decision::{Alternative, Decision, DecisionError, NewDecision};
 pub use directive::{Directive, DirectiveKind, NewDirective};
 pub use id::{DecisionId, DirectiveId};
 pub use link::Link;
-
-// Re-export the shared/domain types that appear in this layer's public
-// surface, so callers depend on `decisions_oss::*` without also naming the
-// vendored crates.
-pub use taskagent_domain::Actor;
-pub use taskagent_shared::{time, PlanId, ProjectId, TaskId, Timestamp};
+pub use shared_ids::{PlanId, ProjectId, TaskId};
+pub use time::Timestamp;
