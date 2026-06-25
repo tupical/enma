@@ -1,4 +1,4 @@
-//! `decisions-oss` — the Decisions layer of the MCPBox family.
+//! `enma` — the Decisions layer of the MCPBox family.
 //!
 //! In the MCPBox pipeline (Intake → Sensemaking → **Decisions** → Planning →
 //! Actions → execution; vision.md §6.3, §10) the Decisions layer turns
