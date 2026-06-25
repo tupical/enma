@@ -1,6 +1,6 @@
 //! Decision-layer id newtypes.
 //!
-//! The shared crate (`taskagent-shared::ids`) only mints ids for core
+//! The shared crate (`daruma-shared::ids`) only mints ids for core
 //! entities, and `vendor/oss` is **read-only** — so the ids the Decisions
 //! layer owns are defined here, in its own zone. The shape (UUIDv7 +
 //! human-readable prefix, `serde(transparent)`, `pln_<uuid>`-style Display)
