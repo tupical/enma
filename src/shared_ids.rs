@@ -1,9 +1,9 @@
 //! Local newtypes for cross-layer reference ids.
 //!
 //! `Link` variants point to entities owned by sibling layers (Planning,
-//! Actions).  Rather than pulling in `taskagent-shared`, we mint minimal
+//! Actions).  Rather than pulling in `daruma-shared`, we mint minimal
 //! UUIDv7 newtypes here that carry the same prefix convention.  mcpbox maps
-//! to/from the real taskagent ids when wiring — the underlying `Uuid` is
+//! to/from the real daruma ids when wiring — the underlying `Uuid` is
 //! identical, so the conversion is a no-op cast.
 
 use serde::{Deserialize, Serialize};

@@ -10,7 +10,7 @@
 //! Decisions does not own Sensemaking artifacts or Plans, so the targets are
 //! the ids those layers already mint: a free-form Sensemaking reference and
 //! local newtypes for `PlanId` / `ProjectId` / `TaskId` that carry the same
-//! prefix convention as the taskagent originals.  mcpbox casts between them
+//! prefix convention as the daruma originals.  mcpbox casts between them
 //! when wiring — the underlying `Uuid` is identical.
 
 use serde::{Deserialize, Serialize};

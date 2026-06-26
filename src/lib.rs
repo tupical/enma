@@ -1,4 +1,4 @@
-//! `decisions-oss` — the Decisions layer of the MCPBox family.
+//! `enma` — the Decisions layer of the MCPBox family.
 //!
 //! In the MCPBox pipeline (Intake → Sensemaking → **Decisions** → Planning →
 //! Actions → execution; vision.md §6.3, §10) the Decisions layer turns
@@ -19,9 +19,9 @@
 //!   schedules, runs, or mutates a plan. Realising a decision is Planning's
 //!   and Actions' job.
 //! - These are pure domain primitives: no I/O, no async. This crate has no
-//!   dependency on taskagent or sibling `*_oss` layers.
+//!   dependency on daruma or sibling `*_oss` layers.
 //! - All JSON is serde-derived; ids, `Timestamp`, and `Actor` are local
-//!   primitives — mcpbox maps them to/from taskagent types when wiring.
+//!   primitives — mcpbox maps them to/from daruma types when wiring.
 //! - Adapters from sensemaking (`draft_from_sensing`) live in mcpbox, not
 //!   here, to keep this crate free of sibling-layer dependencies.
 

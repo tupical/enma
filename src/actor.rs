@@ -1,8 +1,8 @@
 //! Local `Actor` primitive — who authored a decision or directive.
 //!
-//! Self-contained replacement for `taskagent_domain::Actor`.  The shape is
+//! Self-contained replacement for `daruma_domain::Actor`.  The shape is
 //! intentionally minimal: a discriminated kind (`user` / `agent`) and an
-//! opaque string id.  mcpbox maps to/from taskagent's own `Actor` when
+//! opaque string id.  mcpbox maps to/from daruma's own `Actor` when
 //! wiring the layer — the wire strings are identical, so round-trips are
 //! lossless.
 
