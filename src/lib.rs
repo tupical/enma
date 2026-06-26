@@ -1,6 +1,6 @@
-//! `enma` — the Decisions layer of the MCPBox family.
+//! `enma` — the Decisions layer of the the host family.
 //!
-//! In the MCPBox pipeline (Intake → Sensemaking → **Decisions** → Planning →
+//! In the the host pipeline (Intake → Sensemaking → **Decisions** → Planning →
 //! Actions → execution; vision.md §6.3, §10) the Decisions layer turns
 //! understanding into *direction*. It owns the goal-and-decision primitives:
 //!
@@ -21,8 +21,8 @@
 //! - These are pure domain primitives: no I/O, no async. This crate has no
 //!   dependency on daruma or sibling `*_oss` layers.
 //! - All JSON is serde-derived; ids, `Timestamp`, and `Actor` are local
-//!   primitives — mcpbox maps them to/from daruma types when wiring.
-//! - Adapters from sensemaking (`draft_from_sensing`) live in mcpbox, not
+//!   primitives — the host maps them to/from daruma types when wiring.
+//! - Adapters from sensemaking (`draft_from_sensing`) live in the host, not
 //!   here, to keep this crate free of sibling-layer dependencies.
 
 pub mod actor;

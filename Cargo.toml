@@ -10,9 +10,9 @@ path = "src/lib.rs"
 
 [dependencies]
 # Self-contained skeleton: NO daruma-* and NO sibling *_oss deps.
-# Every primitive (Actor, Timestamp, id newtypes) is local. mcpbox supplies
+# Every primitive (Actor, Timestamp, id newtypes) is local. the host supplies
 # any daruma adapters and maps between local and daruma types when
-# wiring — implementations live only inside mcpbox, never here.
+# wiring — implementations live only inside the host, never here.
 serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid       = { version = "1.10", features = ["v7", "serde"] }

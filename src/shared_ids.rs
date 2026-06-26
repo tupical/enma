@@ -2,7 +2,7 @@
 //!
 //! `Link` variants point to entities owned by sibling layers (Planning,
 //! Actions).  Rather than pulling in `daruma-shared`, we mint minimal
-//! UUIDv7 newtypes here that carry the same prefix convention.  mcpbox maps
+//! UUIDv7 newtypes here that carry the same prefix convention.  the host maps
 //! to/from the real daruma ids when wiring — the underlying `Uuid` is
 //! identical, so the conversion is a no-op cast.
 
