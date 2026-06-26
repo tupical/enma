@@ -2,7 +2,7 @@
 //!
 //! Self-contained replacement for `daruma_domain::Actor`.  The shape is
 //! intentionally minimal: a discriminated kind (`user` / `agent`) and an
-//! opaque string id.  mcpbox maps to/from daruma's own `Actor` when
+//! opaque string id.  the host maps to/from daruma's own `Actor` when
 //! wiring the layer — the wire strings are identical, so round-trips are
 //! lossless.
 

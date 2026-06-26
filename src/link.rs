@@ -1,6 +1,6 @@
 //! Cross-layer links.
 //!
-//! Decisions sits between Sensemaking and Planning in the MCPBox pipeline
+//! Decisions sits between Sensemaking and Planning in the the host pipeline
 //! (vision.md §6.3): a decision is *grounded in* what sensemaking surfaced
 //! and *informs* the plans that follow. Those neighbours are not modelled
 //! here — Decisions only stores a typed reference to them, so the link is a
@@ -10,7 +10,7 @@
 //! Decisions does not own Sensemaking artifacts or Plans, so the targets are
 //! the ids those layers already mint: a free-form Sensemaking reference and
 //! local newtypes for `PlanId` / `ProjectId` / `TaskId` that carry the same
-//! prefix convention as the daruma originals.  mcpbox casts between them
+//! prefix convention as the daruma originals.  the host casts between them
 //! when wiring — the underlying `Uuid` is identical.
 
 use serde::{Deserialize, Serialize};

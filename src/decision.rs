@@ -2,7 +2,7 @@
 //!
 //! A decision records a *choice that was made*: not the work to do it (that
 //! is Planning/Actions), but the commitment itself and the reasoning that
-//! must survive it. The MCPBox charter (vision.md §10 Decisions Core)
+//! must survive it. The project charter (vision.md §10 Decisions Core)
 //! requires a decision to carry its statement, author, date, rationale, the
 //! alternatives that were weighed, the consequences accepted, and the
 //! conditions under which it should be revisited.
