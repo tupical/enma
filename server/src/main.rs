@@ -70,7 +70,9 @@ async fn main() {
 }
 
 async fn healthz(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({ "service": TOOL, "status": "ok", "version": s.version, "git_sha": option_env!("GIT_SHA").unwrap_or("dev") }))
+    Json(
+        json!({ "service": TOOL, "status": "ok", "version": s.version, "git_sha": option_env!("GIT_SHA").unwrap_or("dev") }),
+    )
 }
 
 fn now_secs() -> i64 {
@@ -193,12 +195,10 @@ fn dispatch(
             })?;
             Ok(json!({ "method": "enma.decide", "decision": decision }))
         }
-        "enma.list" | "enma.get" | "enma.list_decisions" | "enma.get_decision" => {
-            Err((
-                StatusCode::NOT_IMPLEMENTED,
-                json!({"error": "unsupported", "detail": "enma-server is stateless (OSS skeleton has no store); list/get need a storage adapter"}),
-            ))
-        }
+        "enma.list" | "enma.get" | "enma.list_decisions" | "enma.get_decision" => Err((
+            StatusCode::NOT_IMPLEMENTED,
+            json!({"error": "unsupported", "detail": "enma-server is stateless (OSS skeleton has no store); list/get need a storage adapter"}),
+        )),
         other => Err((
             StatusCode::BAD_REQUEST,
             json!({"error": "unknown_method", "detail": other}),
