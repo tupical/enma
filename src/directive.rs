@@ -116,6 +116,9 @@ impl NewDirective {
         if self.statement.trim().is_empty() {
             return Err(crate::decision::DecisionError::EmptyStatement);
         }
+        for link in &self.links {
+            link.validate()?;
+        }
         Ok(Directive {
             id: self.id.unwrap_or_default(),
             kind: self.kind,
@@ -181,5 +184,23 @@ mod tests {
         }
         .into_directive(now);
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn blank_sensemaking_link_reference_is_rejected() {
+        let n = NewDirective {
+            id: None,
+            kind: DirectiveKind::Constraint,
+            statement: "Must run on-prem".into(),
+            set_by: Actor::user(),
+            rationale: String::new(),
+            links: vec![Link::Sensemaking {
+                reference: "  ".into(),
+            }],
+        };
+        assert_eq!(
+            n.into_directive(time::now()).unwrap_err(),
+            crate::decision::DecisionError::EmptyLinkReference
+        );
     }
 }

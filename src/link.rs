@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::decision::DecisionError;
 use crate::shared_ids::{PlanId, ProjectId, TaskId};
 
 /// Where a decision (or directive) points, in either direction along the
@@ -46,6 +47,23 @@ impl Link {
             Link::Task { .. } => "task",
         }
     }
+
+    /// Reject a blank reference on the string-carrying variants. `Sensemaking`
+    /// is the only one today, but the match is exhaustive so a future
+    /// string-like variant is caught here too instead of silently skipped.
+    /// A blank reference points at nothing, which breaks lineage on the
+    /// other end of the link.
+    pub fn validate(&self) -> Result<(), DecisionError> {
+        match self {
+            Link::Sensemaking { reference } if reference.trim().is_empty() => {
+                Err(DecisionError::EmptyLinkReference)
+            }
+            Link::Sensemaking { .. }
+            | Link::Plan { .. }
+            | Link::Project { .. }
+            | Link::Task { .. } => Ok(()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -71,5 +89,40 @@ mod tests {
         let json = serde_json::to_string(&l).unwrap();
         let back: Link = serde_json::from_str(&json).unwrap();
         assert_eq!(back, l);
+    }
+
+    #[test]
+    fn blank_sensemaking_reference_is_rejected() {
+        let l = Link::Sensemaking {
+            reference: "   ".into(),
+        };
+        assert_eq!(l.validate().unwrap_err(), DecisionError::EmptyLinkReference);
+
+        let empty = Link::Sensemaking {
+            reference: "".into(),
+        };
+        assert_eq!(
+            empty.validate().unwrap_err(),
+            DecisionError::EmptyLinkReference
+        );
+    }
+
+    #[test]
+    fn non_blank_sensemaking_reference_is_accepted() {
+        let l = Link::Sensemaking {
+            reference: "insight-42".into(),
+        };
+        assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn id_carrying_links_are_always_valid() {
+        assert!(Link::Plan { id: PlanId::new() }.validate().is_ok());
+        assert!(Link::Project {
+            id: ProjectId::new()
+        }
+        .validate()
+        .is_ok());
+        assert!(Link::Task { id: TaskId::new() }.validate().is_ok());
     }
 }

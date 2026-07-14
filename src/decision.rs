@@ -71,15 +71,17 @@ pub enum DecisionError {
     EmptyStatement,
     /// An alternative was recorded with an empty `option`.
     EmptyAlternative,
+    /// A [`Link`] carries a blank string reference (e.g. `Sensemaking` with
+    /// an empty or whitespace-only `reference`), which would break lineage.
+    EmptyLinkReference,
 }
 
 impl std::fmt::Display for DecisionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DecisionError::EmptyStatement => f.write_str("decision statement must not be empty"),
-            DecisionError::EmptyAlternative => {
-                f.write_str("alternative option must not be empty")
-            }
+            DecisionError::EmptyAlternative => f.write_str("alternative option must not be empty"),
+            DecisionError::EmptyLinkReference => f.write_str("link reference must not be empty"),
         }
     }
 }
@@ -118,6 +120,9 @@ impl NewDecision {
         }
         if self.alternatives.iter().any(|a| a.option.trim().is_empty()) {
             return Err(DecisionError::EmptyAlternative);
+        }
+        for link in &self.links {
+            link.validate()?;
         }
         Ok(Decision {
             id: self.id.unwrap_or_default(),
@@ -192,6 +197,18 @@ mod tests {
         assert_eq!(
             n.into_decision(time::now()).unwrap_err(),
             DecisionError::EmptyAlternative
+        );
+    }
+
+    #[test]
+    fn blank_sensemaking_link_reference_is_rejected() {
+        let mut n = sample();
+        n.links = vec![Link::Sensemaking {
+            reference: "   ".into(),
+        }];
+        assert_eq!(
+            n.into_decision(time::now()).unwrap_err(),
+            DecisionError::EmptyLinkReference
         );
     }
 
