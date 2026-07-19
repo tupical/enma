@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::decision::DecisionError;
-use crate::shared_ids::{PlanId, ProjectId, TaskId};
+use crate::id::{PlanId, ProjectId, TaskId};
 
 /// Where a decision (or directive) points, in either direction along the
 /// pipeline. The direction is implied by the variant: sensemaking is what a

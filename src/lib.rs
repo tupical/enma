@@ -30,13 +30,11 @@ pub mod decision;
 pub mod directive;
 pub mod id;
 pub mod link;
-pub mod shared_ids;
 pub mod time;
 
 pub use actor::{Actor, ActorKind};
 pub use decision::{Alternative, Decision, DecisionError, NewDecision};
 pub use directive::{Directive, DirectiveKind, NewDirective};
-pub use id::{DecisionId, DirectiveId};
+pub use id::{DecisionId, DirectiveId, PlanId, ProjectId, TaskId};
 pub use link::Link;
-pub use shared_ids::{PlanId, ProjectId, TaskId};
 pub use time::Timestamp;
