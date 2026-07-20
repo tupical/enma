@@ -33,6 +33,29 @@ impl McpHandler for Handler {
     ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
         dispatch(method, params)
     }
+
+    fn tools(&self) -> Vec<serde_json::Value> {
+        tools()
+    }
+}
+
+/// Tool descriptors for `tools/list` — one per method actually handled by
+/// [`dispatch`] (`enma.list`/`enma.get`/`enma.list_decisions`/
+/// `enma.get_decision` are NOT_IMPLEMENTED, so they are omitted).
+fn tools() -> Vec<serde_json::Value> {
+    vec![json!({
+        "name": "enma_decide",
+        "description": "Build a typed Decision from a decision statement, optionally linked to an upstream sensing item.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "statement": {"type": "string"},
+                "source_ref": {"type": "string"},
+                "decided_by": {"type": "object"}
+            },
+            "required": ["statement"]
+        }
+    })]
 }
 
 #[tokio::main]
@@ -160,6 +183,20 @@ mod tests {
         assert_eq!(code, StatusCode::NOT_IMPLEMENTED);
         let (code, _) = dispatch("enma.nope", json!({})).unwrap_err();
         assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn tools_list_names_are_all_dispatchable() {
+        for tool in tools() {
+            let name = tool["name"].as_str().unwrap();
+            let method = name.replacen('_', ".", 1);
+            let (_, body) = dispatch(&method, json!({}))
+                .expect_err("empty params must not satisfy any real method");
+            assert_ne!(
+                body["error"], "unknown_method",
+                "{method} must be a real dispatch method"
+            );
+        }
     }
 
     #[test]
