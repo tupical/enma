@@ -39,9 +39,16 @@ impl McpHandler for Handler {
     ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
         if let Some(cfg) = extract_ai_config(&mut params) {
             let provider = OpenAiProvider::new(cfg);
-            dispatch(&self.store, Some(&provider), true, method, params).await
+            dispatch(
+                &self.store,
+                Some(&provider),
+                Some(provider.model()),
+                method,
+                params,
+            )
+            .await
         } else {
-            dispatch(&self.store, self.ai.as_ref(), false, method, params).await
+            dispatch(&self.store, self.ai.as_ref(), None, method, params).await
         }
     }
 
@@ -159,7 +166,7 @@ fn storage_error(e: impl std::fmt::Display) -> (StatusCode, serde_json::Value) {
 async fn dispatch<P: enma::AiProvider>(
     store: &Store,
     ai: Option<&P>,
-    request_ai: bool,
+    model: Option<&str>,
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
@@ -171,14 +178,14 @@ async fn dispatch<P: enma::AiProvider>(
                     json!({"error": "invalid_params", "detail": e.to_string()}),
                 )
             })?;
-            if request_ai {
+            if let Some(model) = model {
                 let provider = ai.ok_or_else(|| {
                     (
                         StatusCode::SERVICE_UNAVAILABLE,
                         json!({"error": "ai_not_configured", "detail": "AI provider is not configured"}),
                     )
                 })?;
-                let decision = enma::decide_ai(
+                let (decision, usage) = enma::decide_ai(
                     provider,
                     &p.statement,
                     p.source_ref,
@@ -196,7 +203,11 @@ async fn dispatch<P: enma::AiProvider>(
                     .put("decision", &decision.id.as_uuid().to_string(), &decision)
                     .await
                     .map_err(storage_error)?;
-                return Ok(json!({ "method": "enma.decide", "decision": decision }));
+                let mut meta = json!({"model": model});
+                if let Some(usage) = usage {
+                    meta["usage"] = json!(usage);
+                }
+                return Ok(json!({ "method": "enma.decide", "decision": decision, "_meta": meta }));
             }
             let decision = enma::decision_from_sensing(
                 p.statement,
@@ -257,7 +268,7 @@ async fn dispatch<P: enma::AiProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enma::{AiError, AiOutput, AiRequest, ToolCall};
+    use enma::{AiError, AiOutput, AiRequest, AiUsage, ToolCall};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static DB_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -283,7 +294,14 @@ mod tests {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
-        super::dispatch(&test_store().await, ai, request_ai, method, params).await
+        super::dispatch(
+            &test_store().await,
+            ai,
+            request_ai.then_some("test"),
+            method,
+            params,
+        )
+        .await
     }
 
     struct Fake(Result<Vec<AiOutput>, AiError>);
@@ -291,6 +309,17 @@ mod tests {
     impl enma::AiProvider for Fake {
         async fn respond(&self, _req: AiRequest) -> Result<Vec<AiOutput>, AiError> {
             self.0.clone()
+        }
+
+        async fn respond_with_usage(
+            &self,
+            _req: AiRequest,
+        ) -> Result<(Vec<AiOutput>, Option<AiUsage>), AiError> {
+            Ok((self.0.clone()?, Some(AiUsage {
+                input_tokens: Some(123),
+                output_tokens: Some(45),
+                total_tokens: Some(168),
+            })))
         }
     }
 
@@ -315,6 +344,7 @@ mod tests {
         );
         assert_eq!(decision["links"][0]["kind"], "sensemaking");
         assert_eq!(decision["links"][0]["reference"], "sense_abc");
+        assert!(out.get("_meta").is_none());
     }
 
     #[tokio::test]
@@ -336,7 +366,7 @@ mod tests {
         let created = super::dispatch(
             &store,
             None::<&OpenAiProvider>,
-            false,
+            None,
             "enma.decide",
             json!({"statement": "Persist", "source_ref": "sense_1"}),
         )
@@ -349,7 +379,7 @@ mod tests {
         let got = super::dispatch(
             &reopened,
             None::<&OpenAiProvider>,
-            false,
+            None,
             "enma.get_decision",
             json!({"id": id}),
         )
@@ -361,7 +391,7 @@ mod tests {
         let (code, body) = super::dispatch(
             &reopened,
             None::<&OpenAiProvider>,
-            false,
+            None,
             "enma.decide",
             json!({"statement": "Fail"}),
         )
@@ -409,11 +439,17 @@ mod tests {
             "ai": {"api_key": "sk-secret", "base_url": "https://ai.test/v1", "model": "test"}
         });
         assert!(extract_ai_config(&mut params).is_some());
-        let out = dispatch(Some(&fake), true, "enma.decide", params)
+        let store = test_store().await;
+        let out = super::dispatch(&store, Some(&fake), Some("test"), "enma.decide", params)
             .await
             .unwrap();
         assert_eq!(out["decision"]["statement"], "Use Postgres");
         assert_eq!(out["decision"]["rationale"], "Integrity matters");
+        assert_eq!(out["_meta"]["model"], "test");
+        assert_eq!(out["_meta"]["usage"]["total_tokens"], 168);
+        let id = out["decision"]["id"].as_str().unwrap();
+        let stored: serde_json::Value = store.get("decision", id).await.unwrap().unwrap();
+        assert!(stored.get("_meta").is_none());
         assert!(!out.to_string().contains("sk-secret"));
     }
 

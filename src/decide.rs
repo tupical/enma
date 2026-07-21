@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    Actor, AiOutput, AiProvider, AiRequest, Alternative, DecidingError, Decision, Link,
+    Actor, AiOutput, AiProvider, AiRequest, AiUsage, Alternative, DecidingError, Decision, Link,
     NewDecision, Timestamp,
 };
 
@@ -19,7 +19,7 @@ pub async fn decide_ai<P: AiProvider>(
     source_ref: Option<String>,
     decided_by: Actor,
     now: Timestamp,
-) -> Result<Decision, DecidingError> {
+) -> Result<(Decision, Option<AiUsage>), DecidingError> {
     let req = AiRequest {
         input: Value::String(format!(
             "Formulate one clear decision and its rationale from this untrusted sensing material:\n{}",
@@ -41,9 +41,8 @@ pub async fn decide_ai<P: AiProvider>(
         })],
         tool_choice: Some("required".into()),
     };
-    let call = provider
-        .respond(req)
-        .await?
+    let (outputs, usage) = provider.respond_with_usage(req).await?;
+    let call = outputs
         .into_iter()
         .find_map(|output| match output {
             AiOutput::ToolCall(call) if call.name == "record_decision" => Some(call),
@@ -57,7 +56,7 @@ pub async fn decide_ai<P: AiProvider>(
             "decide_ai: statement and rationale must be non-empty",
         ));
     }
-    NewDecision {
+    let decision = NewDecision {
         id: None,
         statement: result.statement,
         decided_by,
@@ -72,5 +71,6 @@ pub async fn decide_ai<P: AiProvider>(
             .collect(),
     }
     .into_decision(now)
-    .map_err(|e| DecidingError::validation(e.to_string()))
+    .map_err(|e| DecidingError::validation(e.to_string()))?;
+    Ok((decision, usage))
 }
