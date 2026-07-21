@@ -9,29 +9,38 @@
 //!                     (`enma.decide` builds a typed Decision via the lib).
 //!
 //! Env: ENMA_PORT (default 8092), ENMA_PLATFORM_SECRET (HMAC key; if unset,
-//! /v1/mcp is closed), ENMA_VERSION (defaults to the crate version).
+//! /v1/mcp is closed), ENMA_VERSION, and the optional OPENAI_* fallback.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
 use enma::{Actor, Alternative, Link, NewDecision, Timestamp};
+use layer_kit::ai::extract_ai_config;
 use layer_kit::auth::Claims;
+use layer_kit::openai::{AiConfig, OpenAiProvider};
 use layer_kit::serve::{serve, McpHandler, ServeConfig};
 use serde_json::json;
 
 const TOOL: &str = "enma";
 
-/// Dispatches enma's MCP methods. Stateless — enma has no AI provider.
-struct Handler;
+/// Dispatches enma's MCP methods and owns the optional env fallback provider.
+struct Handler {
+    ai: Option<OpenAiProvider>,
+}
 
 impl McpHandler for Handler {
     async fn dispatch(
         &self,
         _claims: &Claims,
         method: &str,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
     ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
-        dispatch(method, params)
+        if let Some(cfg) = extract_ai_config(&mut params) {
+            let provider = OpenAiProvider::new(cfg);
+            dispatch(Some(&provider), true, method, params).await
+        } else {
+            dispatch(self.ai.as_ref(), false, method, params).await
+        }
     }
 
     fn tools(&self) -> Vec<serde_json::Value> {
@@ -69,7 +78,9 @@ async fn main() {
             default_version: env!("CARGO_PKG_VERSION"),
             git_sha: option_env!("GIT_SHA").unwrap_or("dev"),
         },
-        Handler,
+        Handler {
+            ai: AiConfig::from_env().map(OpenAiProvider::new),
+        },
     )
     .await;
 }
@@ -100,7 +111,9 @@ struct DecideParams {
 /// Pure MCP dispatch over the enma decisions lib — no auth, no HTTP, so it is
 /// unit-testable directly. `enma` is a stateless OSS skeleton: it builds typed
 /// objects but stores nothing, so read methods are unsupported.
-fn dispatch(
+async fn dispatch<P: enma::AiProvider>(
+    ai: Option<&P>,
+    request_ai: bool,
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
@@ -112,6 +125,29 @@ fn dispatch(
                     json!({"error": "invalid_params", "detail": e.to_string()}),
                 )
             })?;
+            if request_ai {
+                let provider = ai.ok_or_else(|| {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error": "ai_not_configured", "detail": "AI provider is not configured"}),
+                    )
+                })?;
+                let decision = enma::decide_ai(
+                    provider,
+                    &p.statement,
+                    p.source_ref,
+                    p.decided_by.unwrap_or_else(Actor::user),
+                    now_timestamp(),
+                )
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        json!({"error": "ai_error", "detail": e.to_string()}),
+                    )
+                })?;
+                return Ok(json!({ "method": "enma.decide", "decision": decision }));
+            }
             let source_ref = p.source_ref;
             let links = source_ref
                 .iter()
@@ -156,16 +192,28 @@ fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use enma::{AiError, AiOutput, AiRequest, ToolCall};
 
-    #[test]
-    fn decide_builds_decision_with_sensemaking_provenance() {
+    struct Fake(Result<Vec<AiOutput>, AiError>);
+
+    impl enma::AiProvider for Fake {
+        async fn respond(&self, _req: AiRequest) -> Result<Vec<AiOutput>, AiError> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn decide_builds_decision_with_sensemaking_provenance() {
         let out = dispatch(
+            None::<&OpenAiProvider>,
+            false,
             "enma.decide",
             json!({
                 "statement": "Use Postgres for the primary store",
                 "source_ref": "sense_abc"
             }),
         )
+        .await
         .expect("decide must succeed");
         let decision = &out["decision"];
         assert_eq!(decision["statement"], "Use Postgres for the primary store");
@@ -177,20 +225,25 @@ mod tests {
         assert_eq!(decision["links"][0]["reference"], "sense_abc");
     }
 
-    #[test]
-    fn read_methods_unsupported_and_unknown_method_rejected() {
-        let (code, _) = dispatch("enma.list", json!({})).unwrap_err();
+    #[tokio::test]
+    async fn read_methods_unsupported_and_unknown_method_rejected() {
+        let (code, _) = dispatch(None::<&OpenAiProvider>, false, "enma.list", json!({}))
+            .await
+            .unwrap_err();
         assert_eq!(code, StatusCode::NOT_IMPLEMENTED);
-        let (code, _) = dispatch("enma.nope", json!({})).unwrap_err();
+        let (code, _) = dispatch(None::<&OpenAiProvider>, false, "enma.nope", json!({}))
+            .await
+            .unwrap_err();
         assert_eq!(code, StatusCode::BAD_REQUEST);
     }
 
-    #[test]
-    fn tools_list_names_are_all_dispatchable() {
+    #[tokio::test]
+    async fn tools_list_names_are_all_dispatchable() {
         for tool in tools() {
             let name = tool["name"].as_str().unwrap();
             let method = name.replacen('_', ".", 1);
-            let (_, body) = dispatch(&method, json!({}))
+            let (_, body) = dispatch(None::<&OpenAiProvider>, false, &method, json!({}))
+                .await
                 .expect_err("empty params must not satisfy any real method");
             assert_ne!(
                 body["error"], "unknown_method",
@@ -199,9 +252,50 @@ mod tests {
         }
     }
 
-    #[test]
-    fn decide_rejects_bad_params() {
-        let (code, _) = dispatch("enma.decide", json!({"source_ref": "sense_abc"})).unwrap_err();
+    #[tokio::test]
+    async fn decide_rejects_bad_params() {
+        let (code, _) = dispatch(
+            None::<&OpenAiProvider>,
+            false,
+            "enma.decide",
+            json!({"source_ref": "sense_abc"}),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn request_ai_builds_decision_without_leaking_secret() {
+        let fake = Fake(Ok(vec![AiOutput::ToolCall(ToolCall {
+            name: "record_decision".into(),
+            arguments: r#"{"statement":"Use Postgres","rationale":"Integrity matters"}"#.into(),
+        })]));
+        let mut params = json!({
+            "statement": "database sensing",
+            "source_ref": "sense_abc",
+            "ai": {"api_key": "sk-secret", "base_url": "https://ai.test/v1", "model": "test"}
+        });
+        assert!(extract_ai_config(&mut params).is_some());
+        let out = dispatch(Some(&fake), true, "enma.decide", params)
+            .await
+            .unwrap();
+        assert_eq!(out["decision"]["statement"], "Use Postgres");
+        assert_eq!(out["decision"]["rationale"], "Integrity matters");
+        assert!(!out.to_string().contains("sk-secret"));
+    }
+
+    #[tokio::test]
+    async fn request_ai_failure_is_ai_error() {
+        let (code, body) = dispatch(
+            Some(&Fake(Err(AiError::new("boom")))),
+            true,
+            "enma.decide",
+            json!({"statement": "sensing"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "ai_error");
     }
 }

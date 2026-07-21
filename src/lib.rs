@@ -18,23 +18,29 @@
 //! - Decisions **never executes**. It only *fixes the choice* — nothing here
 //!   schedules, runs, or mutates a plan. Realising a decision is Planning's
 //!   and Actions' job.
-//! - These are pure domain primitives: no I/O, no async. This crate has no
-//!   dependency on daruma or sibling `*_oss` layers.
+//! - Domain primitives stay pure; [`decide_ai`] is a provider-neutral async
+//!   operation. This crate has no dependency on daruma or sibling layers.
 //! - All JSON is serde-derived; ids, `Timestamp`, and `Actor` are local
 //!   primitives — the host maps them to/from daruma types when wiring.
 //! - Adapters from sensemaking (`draft_from_sensing`) live in the host, not
 //!   here, to keep this crate free of sibling-layer dependencies.
 
 pub mod actor;
+pub mod ai;
+pub mod decide;
 pub mod decision;
 pub mod directive;
+pub mod error;
 pub mod id;
 pub mod link;
 pub mod time;
 
 pub use actor::{Actor, ActorKind};
+pub use ai::{AiError, AiOutput, AiProvider, AiRequest, ToolCall};
+pub use decide::decide_ai;
 pub use decision::{Alternative, Decision, DecisionError, NewDecision};
 pub use directive::{Directive, DirectiveKind, NewDirective};
+pub use error::DecidingError;
 pub use id::{DecisionId, DirectiveId, PlanId, ProjectId, TaskId};
 pub use link::Link;
 pub use time::Timestamp;
