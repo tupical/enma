@@ -14,11 +14,12 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
-use enma::{Actor, Alternative, Link, NewDecision, Timestamp};
+use enma::{Actor, Decision, Timestamp};
 use layer_kit::ai::extract_ai_config;
 use layer_kit::auth::Claims;
 use layer_kit::openai::{AiConfig, OpenAiProvider};
 use layer_kit::serve::{serve, McpHandler, ServeConfig};
+use layer_kit::store::Store;
 use serde_json::json;
 
 const TOOL: &str = "enma";
@@ -26,6 +27,7 @@ const TOOL: &str = "enma";
 /// Dispatches enma's MCP methods and owns the optional env fallback provider.
 struct Handler {
     ai: Option<OpenAiProvider>,
+    store: Store,
 }
 
 impl McpHandler for Handler {
@@ -37,9 +39,9 @@ impl McpHandler for Handler {
     ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
         if let Some(cfg) = extract_ai_config(&mut params) {
             let provider = OpenAiProvider::new(cfg);
-            dispatch(Some(&provider), true, method, params).await
+            dispatch(&self.store, Some(&provider), true, method, params).await
         } else {
-            dispatch(self.ai.as_ref(), false, method, params).await
+            dispatch(&self.store, self.ai.as_ref(), false, method, params).await
         }
     }
 
@@ -49,10 +51,9 @@ impl McpHandler for Handler {
 }
 
 /// Tool descriptors for `tools/list` — one per method actually handled by
-/// [`dispatch`] (`enma.list`/`enma.get`/`enma.list_decisions`/
-/// `enma.get_decision` are NOT_IMPLEMENTED, so they are omitted).
+/// [`dispatch`].
 fn tools() -> Vec<serde_json::Value> {
-    vec![json!({
+    let mut tools = vec![json!({
         "name": "enma_decide",
         "description": "Build a typed Decision from a decision statement, optionally linked to an upstream sensing item.",
         "inputSchema": {
@@ -64,12 +65,34 @@ fn tools() -> Vec<serde_json::Value> {
             },
             "required": ["statement"]
         }
-    })]
+    })];
+    for (name, description) in [
+        ("enma_list", "List persisted Decisions."),
+        ("enma_list_decisions", "List persisted Decisions."),
+        ("enma_get", "Get a persisted Decision by id."),
+        ("enma_get_decision", "Get a persisted Decision by id."),
+    ] {
+        let get = name.contains("get");
+        tools.push(json!({
+            "name": name,
+            "description": description,
+            "inputSchema": if get {
+                json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]})
+            } else {
+                json!({"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1}}})
+            }
+        }));
+    }
+    tools
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().json().init();
+    let store = Store::from_env(TOOL).await.unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to open enma store");
+        std::process::exit(1);
+    });
 
     serve(
         ServeConfig {
@@ -80,6 +103,7 @@ async fn main() {
         },
         Handler {
             ai: AiConfig::from_env().map(OpenAiProvider::new),
+            store,
         },
     )
     .await;
@@ -108,10 +132,32 @@ struct DecideParams {
     decided_by: Option<Actor>,
 }
 
+#[derive(serde::Deserialize)]
+struct ListParams {
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct GetParams {
+    id: String,
+}
+
+fn default_limit() -> i64 {
+    100
+}
+
+fn storage_error(e: impl std::fmt::Display) -> (StatusCode, serde_json::Value) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        json!({"error": "storage_error", "detail": e.to_string()}),
+    )
+}
+
 /// Pure MCP dispatch over the enma decisions lib — no auth, no HTTP, so it is
-/// unit-testable directly. `enma` is a stateless OSS skeleton: it builds typed
-/// objects but stores nothing, so read methods are unsupported.
+/// unit-testable directly. Decisions are persisted before success is returned.
 async fn dispatch<P: enma::AiProvider>(
+    store: &Store,
     ai: Option<&P>,
     request_ai: bool,
     method: &str,
@@ -146,42 +192,61 @@ async fn dispatch<P: enma::AiProvider>(
                         json!({"error": "ai_error", "detail": e.to_string()}),
                     )
                 })?;
+                store
+                    .put("decision", &decision.id.as_uuid().to_string(), &decision)
+                    .await
+                    .map_err(storage_error)?;
                 return Ok(json!({ "method": "enma.decide", "decision": decision }));
             }
-            let source_ref = p.source_ref;
-            let links = source_ref
-                .iter()
-                .map(|reference| Link::Sensemaking {
-                    reference: reference.clone(),
-                })
-                .collect();
-            let decision = NewDecision {
-                id: None,
-                statement: p.statement,
-                decided_by: p.decided_by.unwrap_or_else(Actor::user),
-                decided_at: None,
-                rationale: source_ref
-                    .as_ref()
-                    .map(|reference| format!("Promoted from sensing item {reference}"))
-                    .unwrap_or_default(),
-                alternatives: Vec::<Alternative>::new(),
-                consequences: Vec::new(),
-                revisit_when: String::new(),
-                links,
-            }
-            .into_decision(now_timestamp())
+            let decision = enma::decision_from_sensing(
+                p.statement,
+                p.source_ref,
+                p.decided_by.unwrap_or_else(Actor::user),
+                now_timestamp(),
+            )
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
                     json!({"error": "invalid_params", "detail": e.to_string()}),
                 )
             })?;
+            store
+                .put("decision", &decision.id.as_uuid().to_string(), &decision)
+                .await
+                .map_err(storage_error)?;
             Ok(json!({ "method": "enma.decide", "decision": decision }))
         }
-        "enma.list" | "enma.get" | "enma.list_decisions" | "enma.get_decision" => Err((
-            StatusCode::NOT_IMPLEMENTED,
-            json!({"error": "unsupported", "detail": "enma-server is stateless (OSS skeleton has no store); list/get need a storage adapter"}),
-        )),
+        "enma.list" | "enma.list_decisions" => {
+            let p: ListParams = serde_json::from_value(params).map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": "invalid_params", "detail": e.to_string()}),
+                )
+            })?;
+            let decisions: Vec<Decision> = store
+                .list("decision", p.limit)
+                .await
+                .map_err(storage_error)?;
+            Ok(json!({"method": method, "decisions": decisions}))
+        }
+        "enma.get" | "enma.get_decision" => {
+            let p: GetParams = serde_json::from_value(params).map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": "invalid_params", "detail": e.to_string()}),
+                )
+            })?;
+            let decision: Option<Decision> =
+                store.get("decision", &p.id).await.map_err(storage_error)?;
+            decision
+                .map(|decision| json!({"method": method, "decision": decision}))
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        json!({"error": "not_found", "detail": p.id}),
+                    )
+                })
+        }
         other => Err((
             StatusCode::BAD_REQUEST,
             json!({"error": "unknown_method", "detail": other}),
@@ -193,6 +258,33 @@ async fn dispatch<P: enma::AiProvider>(
 mod tests {
     use super::*;
     use enma::{AiError, AiOutput, AiRequest, ToolCall};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static DB_SEQ: AtomicU64 = AtomicU64::new(1);
+
+    fn db_path() -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "enma-server-{}-{}.db",
+                std::process::id(),
+                DB_SEQ.fetch_add(1, Ordering::Relaxed)
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    async fn test_store() -> Store {
+        Store::open(&db_path()).await.unwrap()
+    }
+
+    async fn dispatch<P: enma::AiProvider>(
+        ai: Option<&P>,
+        request_ai: bool,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
+        super::dispatch(&test_store().await, ai, request_ai, method, params).await
+    }
 
     struct Fake(Result<Vec<AiOutput>, AiError>);
 
@@ -226,11 +318,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_methods_unsupported_and_unknown_method_rejected() {
-        let (code, _) = dispatch(None::<&OpenAiProvider>, false, "enma.list", json!({}))
+    async fn read_methods_and_unknown_method_rejected() {
+        let out = dispatch(None::<&OpenAiProvider>, false, "enma.list", json!({}))
             .await
-            .unwrap_err();
-        assert_eq!(code, StatusCode::NOT_IMPLEMENTED);
+            .unwrap();
+        assert_eq!(out["decisions"], json!([]));
         let (code, _) = dispatch(None::<&OpenAiProvider>, false, "enma.nope", json!({}))
             .await
             .unwrap_err();
@@ -238,17 +330,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn decision_persists_across_restart_and_write_errors_surface() {
+        let path = db_path();
+        let store = Store::open(&path).await.unwrap();
+        let created = super::dispatch(
+            &store,
+            None::<&OpenAiProvider>,
+            false,
+            "enma.decide",
+            json!({"statement": "Persist", "source_ref": "sense_1"}),
+        )
+        .await
+        .unwrap();
+        let id = created["decision"]["id"].as_str().unwrap().to_owned();
+        drop(store);
+
+        let reopened = Store::open(&path).await.unwrap();
+        let got = super::dispatch(
+            &reopened,
+            None::<&OpenAiProvider>,
+            false,
+            "enma.get_decision",
+            json!({"id": id}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got["decision"]["statement"], "Persist");
+
+        reopened.pool().close().await;
+        let (code, body) = super::dispatch(
+            &reopened,
+            None::<&OpenAiProvider>,
+            false,
+            "enma.decide",
+            json!({"statement": "Fail"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "storage_error");
+    }
+
+    #[tokio::test]
     async fn tools_list_names_are_all_dispatchable() {
         for tool in tools() {
             let name = tool["name"].as_str().unwrap();
             let method = name.replacen('_', ".", 1);
-            let (_, body) = dispatch(None::<&OpenAiProvider>, false, &method, json!({}))
-                .await
-                .expect_err("empty params must not satisfy any real method");
-            assert_ne!(
-                body["error"], "unknown_method",
-                "{method} must be a real dispatch method"
-            );
+            if let Err((_, body)) =
+                dispatch(None::<&OpenAiProvider>, false, &method, json!({})).await
+            {
+                assert_ne!(body["error"], "unknown_method", "{method} must be real");
+            }
         }
     }
 
