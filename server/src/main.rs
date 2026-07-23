@@ -136,6 +136,8 @@ struct DecideParams {
     #[serde(default)]
     source_ref: Option<String>,
     #[serde(default)]
+    sensing_item: Option<serde_json::Value>,
+    #[serde(default)]
     decided_by: Option<Actor>,
 }
 
@@ -207,7 +209,12 @@ async fn dispatch<P: enma::AiProvider>(
                 if let Some(usage) = usage {
                     meta["usage"] = json!(usage);
                 }
-                return Ok(json!({ "method": "enma.decide", "decision": decision, "_meta": meta }));
+                let mut out =
+                    json!({ "method": "enma.decide", "decision": decision, "_meta": meta });
+                if let Some(sensing_item) = p.sensing_item {
+                    out["sensing_item"] = sensing_item;
+                }
+                return Ok(out);
             }
             let decision = enma::decision_from_sensing(
                 p.statement,
@@ -225,7 +232,11 @@ async fn dispatch<P: enma::AiProvider>(
                 .put("decision", &decision.id.as_uuid().to_string(), &decision)
                 .await
                 .map_err(storage_error)?;
-            Ok(json!({ "method": "enma.decide", "decision": decision }))
+            let mut out = json!({ "method": "enma.decide", "decision": decision });
+            if let Some(sensing_item) = p.sensing_item {
+                out["sensing_item"] = sensing_item;
+            }
+            Ok(out)
         }
         "enma.list" | "enma.list_decisions" => {
             let p: ListParams = serde_json::from_value(params).map_err(|e| {
@@ -436,6 +447,7 @@ mod tests {
         let mut params = json!({
             "statement": "database sensing",
             "source_ref": "sense_abc",
+            "sensing_item": {"id": "sense_abc", "body": "database sensing", "kind": "knowledge"},
             "ai": {"api_key": "sk-secret", "base_url": "https://ai.test/v1", "model": "test"}
         });
         assert!(extract_ai_config(&mut params).is_some());
@@ -445,6 +457,10 @@ mod tests {
             .unwrap();
         assert_eq!(out["decision"]["statement"], "Use Postgres");
         assert_eq!(out["decision"]["rationale"], "Integrity matters");
+        let decision: enma::Decision =
+            serde_json::from_value(out["decision"].clone()).unwrap();
+        assert!(decision.alternatives.is_empty());
+        assert_eq!(out["sensing_item"]["id"], "sense_abc");
         assert_eq!(out["_meta"]["model"], "test");
         assert_eq!(out["_meta"]["usage"]["total_tokens"], 168);
         let id = out["decision"]["id"].as_str().unwrap();

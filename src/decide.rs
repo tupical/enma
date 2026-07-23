@@ -10,6 +10,8 @@ use crate::{
 struct DecideResult {
     statement: String,
     rationale: String,
+    #[serde(default)]
+    alternatives: Vec<Alternative>,
 }
 
 /// Turn sensing text into a concrete decision using the existing Decision type.
@@ -33,7 +35,19 @@ pub async fn decide_ai<P: AiProvider>(
                 "type": "object",
                 "properties": {
                     "statement": {"type": "string"},
-                    "rationale": {"type": "string"}
+                    "rationale": {"type": "string"},
+                    "alternatives": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "option": {"type": "string"},
+                                "rejected_because": {"type": "string"}
+                            },
+                            "required": ["option", "rejected_because"],
+                            "additionalProperties": false
+                        }
+                    }
                 },
                 "required": ["statement", "rationale"],
                 "additionalProperties": false
@@ -62,7 +76,7 @@ pub async fn decide_ai<P: AiProvider>(
         decided_by,
         decided_at: None,
         rationale: result.rationale,
-        alternatives: Vec::<Alternative>::new(),
+        alternatives: result.alternatives,
         consequences: Vec::new(),
         revisit_when: String::new(),
         links: source_ref
