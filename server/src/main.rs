@@ -163,6 +163,14 @@ fn storage_error(e: impl std::fmt::Display) -> (StatusCode, serde_json::Value) {
     )
 }
 
+const METHODS: &[&str] = &[
+    "enma.decide",
+    "enma.list",
+    "enma.list_decisions",
+    "enma.get",
+    "enma.get_decision",
+];
+
 /// Pure MCP dispatch over the enma decisions lib — no auth, no HTTP, so it is
 /// unit-testable directly. Decisions are persisted before success is returned.
 async fn dispatch<P: enma::AiProvider>(
@@ -172,6 +180,12 @@ async fn dispatch<P: enma::AiProvider>(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
+    if !METHODS.contains(&method) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({"error": "unknown_method", "detail": method}),
+        ));
+    }
     match method {
         "enma.decide" => {
             let p: DecideParams = serde_json::from_value(params).map_err(|e| {
@@ -423,6 +437,11 @@ mod tests {
                 assert_ne!(body["error"], "unknown_method", "{method} must be real");
             }
         }
+    }
+
+    #[test]
+    fn tools_catalogue_matches_methods() {
+        layer_kit::test_support::assert_catalogue_matches(&tools(), METHODS);
     }
 
     #[tokio::test]
