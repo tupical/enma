@@ -22,7 +22,6 @@
 //!   operation. This crate has no dependency on daruma or sibling layers.
 //! - All JSON is serde-derived; ids, `Timestamp`, and `Actor` are local
 //!   primitives — the host maps them to/from daruma types when wiring.
-//! - Wire-level sensemaking adapters live here without depending on sibling crates.
 
 pub mod actor;
 pub mod ai;
@@ -49,57 +48,12 @@ pub fn is_decision_worthy(sensing_kind: &str) -> bool {
     matches!(sensing_kind, "insight" | "hypothesis")
 }
 
-/// Build a decision from the wire fields of an upstream sensing item.
-pub fn decision_from_sensing(
-    statement: String,
-    source_ref: Option<String>,
-    decided_by: Actor,
-    now: Timestamp,
-) -> Result<Decision, DecisionError> {
-    let links = source_ref
-        .iter()
-        .map(|reference| Link::Sensemaking {
-            reference: reference.clone(),
-        })
-        .collect();
-    NewDecision {
-        id: None,
-        statement,
-        decided_by,
-        decided_at: None,
-        rationale: source_ref
-            .as_ref()
-            .map(|reference| format!("Promoted from sensing item {reference}"))
-            .unwrap_or_default(),
-        alternatives: Vec::new(),
-        consequences: Vec::new(),
-        revisit_when: String::new(),
-        links,
-    }
-    .into_decision(now)
-}
-
 #[cfg(test)]
 mod adapter_tests {
     use super::*;
 
     #[test]
-    fn sensing_fields_are_preserved_in_decision() {
-        let decision = decision_from_sensing(
-            "Choose SQLite".into(),
-            Some("sense_1".into()),
-            Actor::user(),
-            Timestamp::from_timestamp_secs(1).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(decision.statement, "Choose SQLite");
-        assert_eq!(decision.rationale, "Promoted from sensing item sense_1");
-        assert_eq!(
-            decision.links,
-            vec![Link::Sensemaking {
-                reference: "sense_1".into()
-            }]
-        );
+    fn decision_worthy_sensing_kinds_are_selected() {
         assert!(is_decision_worthy("insight"));
         assert!(is_decision_worthy("hypothesis"));
         assert!(!is_decision_worthy("knowledge"));
