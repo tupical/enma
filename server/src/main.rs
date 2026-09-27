@@ -34,22 +34,20 @@ struct Handler {
 impl McpHandler for Handler {
     async fn dispatch(
         &self,
-        _claims: &Claims,
+        claims: &Claims,
         method: &str,
         mut params: serde_json::Value,
     ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
+        // One store serves every tenant: confine this call to the token's scope.
+        let store = &self
+            .store
+            .scoped(&claims.workspace, claims.project.as_deref());
         if let Some(cfg) = extract_ai_config(&mut params) {
             let provider = OpenAiProvider::new(cfg);
-            dispatch(
-                &self.store,
-                Some((&provider, provider.model())),
-                method,
-                params,
-            )
-            .await
+            dispatch(store, Some((&provider, provider.model())), method, params).await
         } else {
             dispatch(
-                &self.store,
+                store,
                 self.ai.as_ref().map(|p| (p, p.model())),
                 method,
                 params,
@@ -509,5 +507,44 @@ mod tests {
         .unwrap_err();
         assert_eq!(code, StatusCode::BAD_GATEWAY);
         assert_eq!(body["error"], "ai_error");
+    }
+
+    /// daruma 01a0d3bc: one layer server serves every tenant — the platform
+    /// token's workspace confines every read, so ws B never sees ws A's objects.
+    #[tokio::test]
+    async fn token_of_one_workspace_never_sees_another() {
+        let claims = |ws: &str| Claims {
+            workspace: ws.into(),
+            project: None,
+            tool: TOOL.into(),
+            exp: i64::MAX,
+        };
+        let store = test_store().await;
+        let fake = successful_fake("secret of A", "why");
+        let out = super::dispatch(
+            &store.scoped("ws_a", None),
+            Some((&fake, "test")),
+            "enma.decide",
+            json!({"statement": "s", "source_ref": "sense_a"}),
+        )
+        .await
+        .unwrap();
+        let id = out["decision"]["id"].as_str().unwrap().to_owned();
+        let handler = Handler { ai: None, store };
+        let b = handler
+            .dispatch(&claims("ws_b"), "enma.list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(b["decisions"], json!([]));
+        let (code, _) = handler
+            .dispatch(&claims("ws_b"), "enma.get", json!({"id": id}))
+            .await
+            .unwrap_err();
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        let a = handler
+            .dispatch(&claims("ws_a"), "enma.list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(a["decisions"][0]["statement"], "secret of A");
     }
 }
