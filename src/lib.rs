@@ -35,7 +35,7 @@ pub mod time;
 
 pub use actor::{Actor, ActorKind};
 pub use ai::{AiError, AiOutput, AiProvider, AiRequest, AiUsage, ToolCall};
-pub use decide::decide_ai;
+pub use decide::{decide_ai, Decided};
 pub use decision::{Alternative, Decision, DecisionError, NewDecision};
 pub use directive::{Directive, DirectiveKind, NewDirective};
 pub use error::DecidingError;

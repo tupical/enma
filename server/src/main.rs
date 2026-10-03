@@ -210,11 +210,13 @@ async fn dispatch<P: enma::AiProvider>(
                     json!({"error": "ai_not_configured", "detail": "AI provider is not configured"}),
                 )
             })?;
-            let (decision, usage) = enma::decide_ai(
+            // Without an explicit human author the model made the call, so the
+            // decision is the agent's until a human confirms it.
+            let decided = enma::decide_ai(
                 provider,
                 &p.statement,
                 p.source_ref,
-                p.decided_by.unwrap_or_else(Actor::user),
+                p.decided_by.unwrap_or_else(|| Actor::agent(model)),
                 now_timestamp(),
             )
             .await
@@ -224,6 +226,15 @@ async fn dispatch<P: enma::AiProvider>(
                     json!({"error": "ai_error", "detail": e.to_string()}),
                 )
             })?;
+            let (decision, usage) = match decided {
+                enma::Decided::Decision(decision, usage) => (decision, usage),
+                enma::Decided::NeedsInput(questions) => {
+                    return Err((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        json!({"error": "needs_input", "questions": questions}),
+                    ))
+                }
+            };
             store
                 .put("decision", &decision.id.as_uuid().to_string(), &decision)
                 .await
@@ -494,6 +505,67 @@ mod tests {
         let stored: serde_json::Value = store.get("decision", id).await.unwrap().unwrap();
         assert!(stored.get("_meta").is_none());
         assert!(!out.to_string().contains("sk-secret"));
+    }
+
+    #[tokio::test]
+    async fn undecidable_is_needs_input_and_does_not_persist() {
+        let fake = Fake(Ok(vec![AiOutput::ToolCall(ToolCall {
+            name: "record_decision".into(),
+            arguments: json!({"decidable": false, "open_questions": ["Which DB?", " "]})
+                .to_string(),
+        })]));
+        let store = test_store().await;
+        let (code, body) = super::dispatch(
+            &store,
+            Some((&fake, "test")),
+            "enma.decide",
+            json!({"statement": "should we migrate?"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"], "needs_input");
+        assert_eq!(body["questions"], json!(["Which DB?"]));
+        let listed = super::dispatch(
+            &store,
+            None::<(&OpenAiProvider, &str)>,
+            "enma.list",
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["decisions"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn decided_by_defaults_to_agent_and_explicit_user_wins() {
+        let fake = Fake(Ok(vec![AiOutput::ToolCall(ToolCall {
+            name: "record_decision".into(),
+            arguments: json!({
+                "decidable": true, "statement": "s", "rationale": "r",
+                "consequences": ["c"], "revisit_when": "if load grows"
+            })
+            .to_string(),
+        })]));
+        let out = dispatch(
+            Some((&fake, "m1")),
+            "enma.decide",
+            json!({"statement": "x"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["decision"]["decided_by"]["kind"], "agent");
+        assert_eq!(out["decision"]["decided_by"]["id"], "m1");
+        assert_eq!(out["decision"]["revisit_when"], "if load grows");
+        assert_eq!(out["decision"]["consequences"], json!(["c"]));
+        let out = dispatch(
+            Some((&fake, "m1")),
+            "enma.decide",
+            json!({"statement": "x", "decided_by": {"kind": "user", "id": "user"}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["decision"]["decided_by"]["kind"], "user");
     }
 
     #[tokio::test]
