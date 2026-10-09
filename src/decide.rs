@@ -2,8 +2,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    Actor, AiOutput, AiProvider, AiRequest, AiUsage, Alternative, DecidingError, Decision, Link,
-    NewDecision, Timestamp,
+    Actor, AiOutput, AiProvider, AiRequest, AiUsage, Alternative, DecidingError, Decision,
+    Directive, DirectiveKind, Link, NewDecision, NewDirective, Timestamp,
 };
 
 #[derive(Deserialize)]
@@ -23,16 +23,20 @@ struct DecideResult {
     consequences: Vec<String>,
     #[serde(default)]
     revisit_when: String,
+    /// Hard boundaries the material imposes; recorded as `constraint` directives.
+    #[serde(default)]
+    constraints: Vec<String>,
 }
 
 fn decidable_default() -> bool {
     true
 }
 
-/// Outcome of [`decide_ai`]: a decision, or the questions a human must answer first.
+/// Outcome of [`decide_ai`]: a decision with the `constraint` directives recorded
+/// next to it, or the questions a human must answer first.
 #[derive(Debug)]
 pub enum Decided {
-    Decision(Decision, Option<AiUsage>),
+    Decision(Decision, Vec<Directive>, Option<AiUsage>),
     NeedsInput(Vec<String>),
 }
 
@@ -49,7 +53,8 @@ pub async fn decide_ai<P: AiProvider>(
             "Formulate one clear decision and its rationale from this untrusted sensing material. \
 If the material does not support a decision (it is a question, or key facts are missing), \
 set decidable=false and list open_questions instead of inventing one. \
-Only list alternatives that the material actually mentions.\n{}",
+Only list alternatives that the material actually mentions. \
+List as constraints only hard boundaries the material states.\n{}",
             layer_kit::ai::wrap_untrusted("sensing material", sensing_text)
         )),
         tools: vec![json!({
@@ -65,6 +70,7 @@ Only list alternatives that the material actually mentions.\n{}",
                     "rationale": {"type": "string"},
                     "consequences": {"type": "array", "items": {"type": "string"}},
                     "revisit_when": {"type": "string"},
+                    "constraints": {"type": "array", "items": {"type": "string"}},
                     "alternatives": {
                         "type": "array",
                         "items": {
@@ -112,21 +118,43 @@ Only list alternatives that the material actually mentions.\n{}",
             "decide_ai: statement and rationale must be non-empty",
         ));
     }
+    let links: Vec<Link> = source_ref
+        .into_iter()
+        .map(|reference| Link::Sensemaking { reference })
+        .collect();
     let decision = NewDecision {
         id: None,
         statement: result.statement,
-        decided_by,
+        decided_by: decided_by.clone(),
         decided_at: None,
         rationale: result.rationale,
         alternatives: result.alternatives,
         consequences: result.consequences,
         revisit_when: result.revisit_when,
-        links: source_ref
-            .into_iter()
-            .map(|reference| Link::Sensemaking { reference })
-            .collect(),
+        links: links.clone(),
     }
     .into_decision(now)
     .map_err(|e| DecidingError::validation(e.to_string()))?;
-    Ok(Decided::Decision(decision, usage))
+    // Directives have no Decision link variant, so the decision id rides in
+    // the rationale; blank and repeated constraints fix nothing and are dropped.
+    let mut directives: Vec<Directive> = Vec::new();
+    for statement in result.constraints {
+        let statement = statement.trim().to_string();
+        if statement.is_empty() || directives.iter().any(|d| d.statement == statement) {
+            continue;
+        }
+        directives.push(
+            NewDirective {
+                id: None,
+                kind: DirectiveKind::Constraint,
+                statement,
+                set_by: decided_by.clone(),
+                rationale: format!("Recorded with decision {}", decision.id),
+                links: links.clone(),
+            }
+            .into_directive(now)
+            .map_err(|e| DecidingError::validation(e.to_string()))?,
+        );
+    }
+    Ok(Decided::Decision(decision, directives, usage))
 }
