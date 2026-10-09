@@ -226,8 +226,10 @@ async fn dispatch<P: enma::AiProvider>(
                     json!({"error": "ai_error", "detail": e.to_string()}),
                 )
             })?;
-            let (decision, usage) = match decided {
-                enma::Decided::Decision(decision, usage) => (decision, usage),
+            let (decision, directives, usage) = match decided {
+                enma::Decided::Decision(decision, directives, usage) => {
+                    (decision, directives, usage)
+                }
                 enma::Decided::NeedsInput(questions) => {
                     return Err((
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -239,11 +241,20 @@ async fn dispatch<P: enma::AiProvider>(
                 .put("decision", &decision.id.as_uuid().to_string(), &decision)
                 .await
                 .map_err(storage_error)?;
+            for directive in &directives {
+                store
+                    .put("directive", &directive.id.as_uuid().to_string(), directive)
+                    .await
+                    .map_err(storage_error)?;
+            }
             let mut meta = json!({"model": model});
             if let Some(usage) = usage {
                 meta["usage"] = json!(usage);
             }
             let mut out = json!({ "method": "enma.decide", "decision": decision, "_meta": meta });
+            if !directives.is_empty() {
+                out["directives"] = json!(directives);
+            }
             if let Some(sensing_item) = p.sensing_item {
                 out["sensing_item"] = sensing_item;
             }
@@ -505,6 +516,60 @@ mod tests {
         let stored: serde_json::Value = store.get("decision", id).await.unwrap().unwrap();
         assert!(stored.get("_meta").is_none());
         assert!(!out.to_string().contains("sk-secret"));
+    }
+
+    #[tokio::test]
+    async fn constraints_become_constraint_directives_next_to_decision() {
+        let fake = Fake(Ok(vec![AiOutput::ToolCall(ToolCall {
+            name: "record_decision".into(),
+            arguments: json!({
+                "statement": "Use Postgres", "rationale": "Integrity matters",
+                "constraints": ["No downtime", " ", "No downtime", "Stay on-prem"]
+            })
+            .to_string(),
+        })]));
+        let store = test_store().await;
+        let out = super::dispatch(
+            &store,
+            Some((&fake, "test")),
+            "enma.decide",
+            json!({"statement": "database sensing", "source_ref": "sense_abc"}),
+        )
+        .await
+        .unwrap();
+        let directives: Vec<enma::Directive> =
+            serde_json::from_value(out["directives"].clone()).unwrap();
+        let statements: Vec<&str> = directives.iter().map(|d| d.statement.as_str()).collect();
+        assert_eq!(statements, ["No downtime", "Stay on-prem"]);
+        let decision_id = out["decision"]["id"].as_str().unwrap();
+        for directive in &directives {
+            assert_eq!(directive.kind, enma::DirectiveKind::Constraint);
+            assert!(directive.rationale.contains(decision_id));
+            assert_eq!(
+                directive.links,
+                vec![enma::Link::Sensemaking {
+                    reference: "sense_abc".into()
+                }]
+            );
+            let stored: Option<enma::Directive> = store
+                .get("directive", &directive.id.as_uuid().to_string())
+                .await
+                .unwrap();
+            assert_eq!(stored.as_ref(), Some(directive));
+        }
+    }
+
+    #[tokio::test]
+    async fn decision_without_constraints_has_no_directives() {
+        let fake = successful_fake("Use Postgres", "Integrity matters");
+        let out = dispatch(
+            Some((&fake, "test")),
+            "enma.decide",
+            json!({"statement": "x"}),
+        )
+        .await
+        .unwrap();
+        assert!(out.get("directives").is_none());
     }
 
     #[tokio::test]
