@@ -204,6 +204,18 @@ async fn dispatch<P: enma::AiProvider>(
                     json!({"error": "invalid_params", "detail": "statement must be non-empty"}),
                 ));
             }
+            // ADR-0011 fail-closed gate: an untested hypothesis never becomes
+            // a decision. Deterministic, before any AI call; without a
+            // `sensing_item` the tool behaves as before.
+            if let Some(item) = &p.sensing_item {
+                let kind = item["kind"].as_str().unwrap_or_default();
+                if enma::blocks_decision(kind) {
+                    return Err((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        json!({"error": "not_decision_worthy", "kind": kind}),
+                    ));
+                }
+            }
             let (provider, model) = ai.ok_or_else(|| {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -380,6 +392,57 @@ mod tests {
         assert_eq!(decision["links"][0]["kind"], "sensemaking");
         assert_eq!(decision["links"][0]["reference"], "sense_abc");
         assert_eq!(out["_meta"]["model"], "test");
+    }
+
+    /// ADR-0011: a hypothesis is refused before the model is asked, in both
+    /// modes (provider configured or not), and nothing is persisted.
+    #[tokio::test]
+    async fn hypothesis_is_not_decision_worthy_with_or_without_provider() {
+        let fake = successful_fake("Rewrite the cache layer", "Model says so");
+        let params = json!({
+            "statement": "the cache layer is probably the bottleneck",
+            "source_ref": "sense_h",
+            "sensing_item": {"id": "sense_h", "kind": "hypothesis", "body": "cache is slow"}
+        });
+        let store = test_store().await;
+        for ai in [Some((&fake, "test")), None] {
+            let (code, body) = super::dispatch(&store, ai, "enma.decide", params.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(
+                body,
+                json!({"error": "not_decision_worthy", "kind": "hypothesis"})
+            );
+        }
+        let listed = super::dispatch(
+            &store,
+            None::<(&OpenAiProvider, &str)>,
+            "enma.list",
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["decisions"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn insight_is_decided_with_provenance_and_echoed_item() {
+        let fake = successful_fake("Cache reads in Redis", "Hot keys dominate");
+        let out = dispatch(
+            Some((&fake, "test")),
+            "enma.decide",
+            json!({
+                "statement": "hot keys dominate read latency",
+                "source_ref": "sense_i",
+                "sensing_item": {"id": "sense_i", "kind": "insight", "body": "hot keys"}
+            }),
+        )
+        .await
+        .expect("an insight is decision-worthy");
+        assert_eq!(out["decision"]["links"][0]["kind"], "sensemaking");
+        assert_eq!(out["decision"]["links"][0]["reference"], "sense_i");
+        assert_eq!(out["sensing_item"]["kind"], "insight");
     }
 
     #[tokio::test]

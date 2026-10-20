@@ -43,9 +43,19 @@ pub use id::{DecisionId, DirectiveId, PlanId, ProjectId, TaskId};
 pub use link::Link;
 pub use time::Timestamp;
 
-/// Only insights and hypotheses are useful promotion candidates.
+/// Only insights are promotion candidates (ADR-0011): a hypothesis is an
+/// untested claim, not a decision, until it is confirmed as insight/knowledge
+/// or explicitly rejected.
 pub fn is_decision_worthy(sensing_kind: &str) -> bool {
-    matches!(sensing_kind, "insight" | "hypothesis")
+    matches!(sensing_kind, "insight")
+}
+
+/// Kinds `enma.decide` refuses outright (ADR-0011 fail-closed gate): an
+/// untested hypothesis never becomes a decision. Narrower than
+/// [`is_decision_worthy`] on purpose — a hypothesis confirmed as `knowledge`
+/// continues on the product path as before (ADR-0011 §4).
+pub fn blocks_decision(sensing_kind: &str) -> bool {
+    matches!(sensing_kind, "hypothesis")
 }
 
 #[cfg(test)]
@@ -55,7 +65,16 @@ mod adapter_tests {
     #[test]
     fn decision_worthy_sensing_kinds_are_selected() {
         assert!(is_decision_worthy("insight"));
-        assert!(is_decision_worthy("hypothesis"));
+        assert!(!is_decision_worthy("hypothesis"));
         assert!(!is_decision_worthy("knowledge"));
+        assert!(!is_decision_worthy("rejected_idea"));
+    }
+
+    #[test]
+    fn only_hypothesis_blocks_a_decision() {
+        assert!(blocks_decision("hypothesis"));
+        assert!(!blocks_decision("insight"));
+        assert!(!blocks_decision("knowledge"));
+        assert!(!blocks_decision(""));
     }
 }
