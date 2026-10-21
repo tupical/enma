@@ -39,7 +39,10 @@ sibling layers; adapters live only inside the host.
 cargo run -p enma-server
 # GET  /healthz   — open liveness/version probe
 # POST /v1/mcp    — platform-token gated MCP surface:
-#                   enma.decide; read methods: enma.list /
+#                   enma.decide (optional `directives` = the project's
+#                   active Directive list, trusted prompt context; a model
+#                   decision must carry consequences and revisit_when);
+#                   read methods: enma.list /
 #                   enma.list_decisions, enma.get / enma.get_decision
 ```
 

@@ -72,7 +72,12 @@ fn tools() -> Vec<serde_json::Value> {
             "properties": {
                 "statement": {"type": "string"},
                 "source_ref": {"type": "string"},
-                "decided_by": {"type": "object"}
+                "decided_by": {"type": "object"},
+                "directives": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Active project directives, passed to the model as trusted context; not stored."
+                }
             },
             "required": ["statement"]
         }
@@ -144,6 +149,10 @@ struct DecideParams {
     sensing_item: Option<serde_json::Value>,
     #[serde(default)]
     decided_by: Option<Actor>,
+    /// ADR-0012: the project's active directives, passed by the host as
+    /// trusted prompt context; not stored.
+    #[serde(default)]
+    directives: Vec<enma::Directive>,
 }
 
 #[derive(serde::Deserialize)]
@@ -227,6 +236,7 @@ async fn dispatch<P: enma::AiProvider>(
             let decided = enma::decide_ai(
                 provider,
                 &p.statement,
+                &p.directives,
                 p.source_ref,
                 p.decided_by.unwrap_or_else(|| Actor::agent(model)),
                 now_timestamp(),
@@ -346,7 +356,12 @@ mod tests {
     fn successful_fake(statement: &str, rationale: &str) -> Fake {
         Fake(Ok(vec![AiOutput::ToolCall(ToolCall {
             name: "record_decision".into(),
-            arguments: json!({"statement": statement, "rationale": rationale}).to_string(),
+            arguments: json!({
+                "statement": statement, "rationale": rationale,
+                "consequences": ["Writes go through one store"],
+                "revisit_when": "if write volume outgrows one node"
+            })
+            .to_string(),
         })]))
     }
 
@@ -587,6 +602,7 @@ mod tests {
             name: "record_decision".into(),
             arguments: json!({
                 "statement": "Use Postgres", "rationale": "Integrity matters",
+                "consequences": ["c"], "revisit_when": "if load grows",
                 "constraints": ["No downtime", " ", "No downtime", "Stay on-prem"]
             })
             .to_string(),
@@ -746,5 +762,144 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(a["decisions"][0]["statement"], "secret of A");
+    }
+
+    /// Captures the request so a test can read the prompt the model saw.
+    struct Capturing(Fake, std::sync::Mutex<Option<AiRequest>>);
+
+    impl enma::AiProvider for Capturing {
+        async fn respond(&self, req: AiRequest) -> Result<Vec<AiOutput>, AiError> {
+            *self.1.lock().unwrap() = Some(req);
+            self.0 .0.clone()
+        }
+    }
+
+    fn fake_args(args: serde_json::Value) -> Fake {
+        Fake(Ok(vec![AiOutput::ToolCall(ToolCall {
+            name: "record_decision".into(),
+            arguments: args.to_string(),
+        })]))
+    }
+
+    /// ADR-0012 gate 1: a model decision without consequences, without
+    /// revisit_when or with an unexplained alternative is a validation error
+    /// and nothing is persisted.
+    #[tokio::test]
+    async fn incomplete_model_decision_is_rejected_and_not_persisted() {
+        let cases = [
+            json!({"statement": "s", "rationale": "r", "revisit_when": "if x"}),
+            json!({"statement": "s", "rationale": "r", "consequences": [" "], "revisit_when": "if x"}),
+            json!({"statement": "s", "rationale": "r", "consequences": ["c"]}),
+            json!({"statement": "s", "rationale": "r", "consequences": ["c"], "revisit_when": "  "}),
+            json!({
+                "statement": "s", "rationale": "r", "consequences": ["c"], "revisit_when": "if x",
+                "alternatives": [{"option": "MySQL", "rejected_because": " "}]
+            }),
+        ];
+        for args in cases {
+            let fake = fake_args(args.clone());
+            let store = test_store().await;
+            let (code, body) = super::dispatch(
+                &store,
+                Some((&fake, "test")),
+                "enma.decide",
+                json!({"statement": "x"}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(code, StatusCode::BAD_GATEWAY, "{args}");
+            assert_eq!(body["error"], "ai_error", "{args}");
+            let listed = super::dispatch(
+                &store,
+                None::<(&OpenAiProvider, &str)>,
+                "enma.list",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(listed["decisions"], json!([]), "{args}");
+        }
+    }
+
+    /// ADR-0012 gate 1: a complete answer yields a decision with non-empty
+    /// consequences, revisit_when and explained alternatives.
+    #[tokio::test]
+    async fn complete_model_decision_keeps_consequences_and_revisit_when() {
+        let fake = fake_args(json!({
+            "statement": "Use Postgres", "rationale": "Integrity matters",
+            "consequences": [" One store to back up ", ""],
+            "revisit_when": " if write volume exceeds 50k/s ",
+            "alternatives": [{"option": "MySQL", "rejected_because": "violates Stay on-prem"}]
+        }));
+        let out = dispatch(
+            Some((&fake, "test")),
+            "enma.decide",
+            json!({"statement": "x"}),
+        )
+        .await
+        .unwrap();
+        let decision: enma::Decision = serde_json::from_value(out["decision"].clone()).unwrap();
+        assert_eq!(decision.consequences, ["One store to back up"]);
+        assert_eq!(decision.revisit_when, "if write volume exceeds 50k/s");
+        assert_eq!(
+            decision.alternatives[0].rejected_because,
+            "violates Stay on-prem"
+        );
+    }
+
+    /// ADR-0012 gate 1: directives passed to `enma.decide` reach the model
+    /// prompt with their role; without `directives` the call behaves as before.
+    #[tokio::test]
+    async fn directives_reach_the_prompt_and_are_optional() {
+        let directive = enma::NewDirective {
+            id: None,
+            kind: enma::DirectiveKind::NonGoal,
+            statement: "No mobile client".into(),
+            set_by: Actor::user(),
+            rationale: String::new(),
+            links: vec![],
+        }
+        .into_directive(now_timestamp())
+        .unwrap();
+        let capturing = Capturing(
+            successful_fake("Ship web only", "Scope"),
+            std::sync::Mutex::new(None),
+        );
+        let out = dispatch(
+            Some((&capturing, "test")),
+            "enma.decide",
+            json!({"statement": "client scope", "directives": [directive]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["decision"]["statement"], "Ship web only");
+        assert!(
+            out.get("directives").is_none(),
+            "passed directives are not stored or echoed"
+        );
+        let prompt = capturing
+            .1
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .input
+            .to_string();
+        assert!(prompt.contains("No mobile client"), "{prompt}");
+        assert!(prompt.contains(&directive.id.to_string()), "{prompt}");
+        assert!(prompt.contains("must not violate"), "{prompt}");
+        let without = Capturing(
+            successful_fake("Ship web only", "Scope"),
+            std::sync::Mutex::new(None),
+        );
+        dispatch(
+            Some((&without, "test")),
+            "enma.decide",
+            json!({"statement": "client scope"}),
+        )
+        .await
+        .unwrap();
+        let prompt = without.1.lock().unwrap().take().unwrap().input.to_string();
+        assert!(!prompt.contains("Active project directives"), "{prompt}");
     }
 }

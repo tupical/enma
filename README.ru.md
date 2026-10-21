@@ -39,7 +39,10 @@ Actions. Крейт не зависит от daruma и соседних слоё
 cargo run -p enma-server
 # GET  /healthz   — открытая проба живости/версии
 # POST /v1/mcp    — MCP-поверхность под платформенным токеном:
-#                   enma.decide; read-методы: enma.list /
+#                   enma.decide (необязательный `directives` — активные
+#                   Directive проекта, доверенный контекст промпта; решение
+#                   модели обязано иметь consequences и revisit_when);
+#                   read-методы: enma.list /
 #                   enma.list_decisions, enma.get / enma.get_decision
 ```
 

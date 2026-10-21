@@ -40,10 +40,49 @@ pub enum Decided {
     NeedsInput(Vec<String>),
 }
 
+/// Role each directive kind plays for the model (ADR-0012 §1).
+fn directive_role(kind: DirectiveKind) -> &'static str {
+    match kind {
+        DirectiveKind::Constraint | DirectiveKind::NonGoal | DirectiveKind::Principle => {
+            "boundary: the decision must not violate it"
+        }
+        DirectiveKind::SuccessCriteria => "threshold: the decision must be good enough to meet it",
+        DirectiveKind::Assumption => "source of revisit conditions: revisit if it breaks",
+        DirectiveKind::Goal => "context",
+    }
+}
+
+/// Trusted host context listing the project's active directives; empty when
+/// the host passed none.
+fn directives_prompt(directives: &[Directive]) -> String {
+    if directives.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\nActive project directives (trusted host context). \
+Every rejected_because must name the directive the option violates (its id or statement).\n",
+    );
+    for d in directives {
+        out.push_str(&format!(
+            "- [{} {}] {} ({})\n",
+            d.kind.as_str(),
+            d.id,
+            d.statement.trim(),
+            directive_role(d.kind)
+        ));
+    }
+    out
+}
+
 /// Turn sensing text into a concrete decision using the existing Decision type.
+///
+/// `directives` are the project's active directives, supplied by the host as
+/// trusted context (ADR-0012); an empty slice is allowed and never excuses
+/// empty `consequences` / `revisit_when`.
 pub async fn decide_ai<P: AiProvider>(
     provider: &P,
     sensing_text: &str,
+    directives: &[Directive],
     source_ref: Option<String>,
     decided_by: Actor,
     now: Timestamp,
@@ -54,7 +93,10 @@ pub async fn decide_ai<P: AiProvider>(
 If the material does not support a decision (it is a question, or key facts are missing), \
 set decidable=false and list open_questions instead of inventing one. \
 Only list alternatives that the material actually mentions. \
-List as constraints only hard boundaries the material states.\n{}",
+List as constraints only hard boundaries the material states. \
+A decision must list at least one consequence and say when it should be revisited \
+(a checkable event, metric or assumption); every alternative needs its rejected_because.{}\n{}",
+            directives_prompt(directives),
             layer_kit::ai::wrap_untrusted("sensing material", sensing_text)
         )),
         tools: vec![json!({
@@ -68,8 +110,15 @@ List as constraints only hard boundaries the material states.\n{}",
                     "open_questions": {"type": "array", "items": {"type": "string"}},
                     "statement": {"type": "string"},
                     "rationale": {"type": "string"},
-                    "consequences": {"type": "array", "items": {"type": "string"}},
-                    "revisit_when": {"type": "string"},
+                    "consequences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Required when decidable: at least one non-empty consequence."
+                    },
+                    "revisit_when": {
+                        "type": "string",
+                        "description": "Required when decidable: the checkable condition to revisit the decision."
+                    },
                     "constraints": {"type": "array", "items": {"type": "string"}},
                     "alternatives": {
                         "type": "array",
@@ -118,6 +167,32 @@ List as constraints only hard boundaries the material states.\n{}",
             "decide_ai: statement and rationale must be non-empty",
         ));
     }
+    // ADR-0012 completeness contract for model-born decisions.
+    let consequences: Vec<String> = result
+        .consequences
+        .into_iter()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+    if consequences.is_empty() {
+        return Err(DecidingError::validation(
+            "decide_ai: consequences must list at least one non-empty item",
+        ));
+    }
+    if result.revisit_when.trim().is_empty() {
+        return Err(DecidingError::validation(
+            "decide_ai: revisit_when must be non-empty",
+        ));
+    }
+    if result
+        .alternatives
+        .iter()
+        .any(|a| a.rejected_because.trim().is_empty())
+    {
+        return Err(DecidingError::validation(
+            "decide_ai: every alternative needs a non-empty rejected_because",
+        ));
+    }
     let links: Vec<Link> = source_ref
         .into_iter()
         .map(|reference| Link::Sensemaking { reference })
@@ -129,8 +204,8 @@ List as constraints only hard boundaries the material states.\n{}",
         decided_at: None,
         rationale: result.rationale,
         alternatives: result.alternatives,
-        consequences: result.consequences,
-        revisit_when: result.revisit_when,
+        consequences,
+        revisit_when: result.revisit_when.trim().to_string(),
         links: links.clone(),
     }
     .into_decision(now)
