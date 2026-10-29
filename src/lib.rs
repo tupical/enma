@@ -58,6 +58,44 @@ pub fn blocks_decision(sensing_kind: &str) -> bool {
     matches!(sensing_kind, "hypothesis")
 }
 
+/// Kinds that are themselves an unanswered question (ADR-0007 §2): deciding
+/// on them would invent the answer, so `enma.decide` asks for input instead.
+pub fn is_open_question(sensing_kind: &str) -> bool {
+    matches!(sensing_kind, "question" | "research_gap")
+}
+
+/// Questions a human must answer before a decision can rest on this sensing
+/// item (ADR-0007 §2 fail-closed gate): its non-blank `open_questions`, or
+/// its body when the item is itself a question/research gap. Empty = no
+/// blocker. Deterministic, so the gate works with no AI provider.
+pub fn unanswered_questions(sensing_item: &serde_json::Value) -> Vec<String> {
+    let mut questions: Vec<String> = Vec::new();
+    for q in sensing_item["open_questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(q) = q.as_str().map(str::trim).filter(|q| !q.is_empty()) {
+            if !questions.iter().any(|known| known == q) {
+                questions.push(q.to_string());
+            }
+        }
+    }
+    let kind = sensing_item["kind"].as_str().unwrap_or_default();
+    if questions.is_empty() && is_open_question(kind) {
+        let body = sensing_item["body"]
+            .as_str()
+            .map(str::trim)
+            .unwrap_or_default();
+        questions.push(if body.is_empty() {
+            kind.to_string()
+        } else {
+            body.to_string()
+        });
+    }
+    questions
+}
+
 #[cfg(test)]
 mod adapter_tests {
     use super::*;
@@ -76,5 +114,29 @@ mod adapter_tests {
         assert!(!blocks_decision("insight"));
         assert!(!blocks_decision("knowledge"));
         assert!(!blocks_decision(""));
+    }
+
+    #[test]
+    fn open_questions_and_question_kinds_are_unanswered() {
+        use serde_json::json;
+        assert_eq!(
+            unanswered_questions(
+                &json!({"kind": "insight", "open_questions": ["Who pays?", " ", "Who pays?", 7]})
+            ),
+            ["Who pays?"]
+        );
+        assert_eq!(
+            unanswered_questions(&json!({"kind": "question", "body": "Which DB?"})),
+            ["Which DB?"]
+        );
+        assert_eq!(
+            unanswered_questions(&json!({"kind": "research_gap", "body": " "})),
+            ["research_gap"]
+        );
+        assert!(unanswered_questions(&json!({"kind": "insight", "body": "hot keys"})).is_empty());
+        assert!(
+            unanswered_questions(&json!({"kind": "knowledge", "open_questions": []})).is_empty()
+        );
+        assert!(!is_open_question("hypothesis"));
     }
 }
