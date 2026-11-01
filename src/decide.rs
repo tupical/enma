@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use crate::{
     Actor, AiOutput, AiProvider, AiRequest, AiUsage, Alternative, DecidingError, Decision,
-    Directive, DirectiveKind, Link, NewDecision, NewDirective, Timestamp,
+    Directive, DirectiveKind, Link, NewDecision, NewDirective, Reversibility, Timestamp,
 };
 
 #[derive(Deserialize)]
@@ -23,6 +23,9 @@ struct DecideResult {
     consequences: Vec<String>,
     #[serde(default)]
     revisit_when: String,
+    /// ADR-0017: required by the schema; an answer without it stays unclassified.
+    #[serde(default)]
+    reversibility: Option<Reversibility>,
     /// Hard boundaries the material imposes; recorded as `constraint` directives.
     #[serde(default)]
     constraints: Vec<String>,
@@ -54,7 +57,11 @@ pub async fn decide_ai<P: AiProvider>(
 If the material does not support a decision (it is a question, or key facts are missing), \
 set decidable=false and list open_questions instead of inventing one. \
 Only list alternatives that the material actually mentions. \
-List as constraints only hard boundaries the material states.\n{}",
+List as constraints only hard boundaries the material states. \
+Set reversibility=irreversible when the effect of acting on the decision cannot be undone \
+inside the executor's repository (data deleted or mutated outside version control, external \
+side effects such as publishing, sending, third-party calls or payments, schema migrations \
+without a verified down step, secret rotation); otherwise reversible.\n{}",
             layer_kit::ai::wrap_untrusted("sensing material", sensing_text)
         )),
         tools: vec![json!({
@@ -70,6 +77,7 @@ List as constraints only hard boundaries the material states.\n{}",
                     "rationale": {"type": "string"},
                     "consequences": {"type": "array", "items": {"type": "string"}},
                     "revisit_when": {"type": "string"},
+                    "reversibility": {"type": "string", "enum": ["reversible", "irreversible"]},
                     "constraints": {"type": "array", "items": {"type": "string"}},
                     "alternatives": {
                         "type": "array",
@@ -84,7 +92,7 @@ List as constraints only hard boundaries the material states.\n{}",
                         }
                     }
                 },
-                "required": ["decidable"],
+                "required": ["decidable", "reversibility"],
                 "additionalProperties": false
             }
         })],
@@ -131,6 +139,7 @@ List as constraints only hard boundaries the material states.\n{}",
         alternatives: result.alternatives,
         consequences: result.consequences,
         revisit_when: result.revisit_when,
+        reversibility: result.reversibility,
         links: links.clone(),
     }
     .into_decision(now)

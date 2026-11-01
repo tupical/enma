@@ -665,6 +665,77 @@ mod tests {
         assert_eq!(listed["decisions"], json!([]));
     }
 
+    /// Records the request so a test can inspect the `record_decision` schema.
+    struct Capture(std::sync::Mutex<Option<AiRequest>>, Vec<AiOutput>);
+
+    impl enma::AiProvider for Capture {
+        async fn respond(&self, req: AiRequest) -> Result<Vec<AiOutput>, AiError> {
+            *self.0.lock().unwrap() = Some(req);
+            Ok(self.1.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn decide_requires_and_persists_reversibility() {
+        let fake = Capture(
+            std::sync::Mutex::new(None),
+            vec![AiOutput::ToolCall(ToolCall {
+                name: "record_decision".into(),
+                arguments: json!({
+                    "decidable": true, "statement": "Drop the legacy table",
+                    "rationale": "Nothing reads it", "reversibility": "irreversible"
+                })
+                .to_string(),
+            })],
+        );
+        let store = test_store().await;
+        let out = super::dispatch(
+            &store,
+            Some((&fake, "m1")),
+            "enma.decide",
+            json!({"statement": "drop legacy table?"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["decision"]["reversibility"], "irreversible");
+        let req = fake.0.lock().unwrap().take().unwrap();
+        let schema = &req.tools[0]["parameters"];
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("reversibility")));
+        assert_eq!(
+            schema["properties"]["reversibility"]["enum"],
+            json!(["reversible", "irreversible"])
+        );
+        let id = out["decision"]["id"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("dec_");
+        let got = super::dispatch(
+            &store,
+            None::<(&OpenAiProvider, &str)>,
+            "enma.get",
+            json!({"id": id}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got["decision"]["reversibility"], "irreversible");
+    }
+
+    #[tokio::test]
+    async fn decision_without_reversibility_stays_unclassified() {
+        let fake = successful_fake("s", "r");
+        let out = dispatch(
+            Some((&fake, "m1")),
+            "enma.decide",
+            json!({"statement": "x"}),
+        )
+        .await
+        .unwrap();
+        assert!(out["decision"].get("reversibility").is_none());
+    }
+
     #[tokio::test]
     async fn decided_by_defaults_to_agent_and_explicit_user_wins() {
         let fake = Fake(Ok(vec![AiOutput::ToolCall(ToolCall {
