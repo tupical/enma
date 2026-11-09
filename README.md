@@ -75,6 +75,11 @@ without an AI provider returns:
   "isError": true}}
 ```
 
+`enma_decide` stops with `needs_input` and a `questions` list when its
+`sensing_item` is a `question` or a `research_gap`, or carries non-blank
+`open_questions`. The check needs no AI provider, runs before any model call
+and persists nothing, so a decision is never built on an unanswered question.
+
 Protocol faults are JSON-RPC `error` objects, also with HTTP 200 (`-32601`
 unknown method, `-32602` `tools/call` without `name`). HTTP status codes are
 reserved for the transport: 401 for a missing or invalid platform token or a
