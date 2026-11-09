@@ -30,6 +30,21 @@ pub struct Alternative {
     pub rejected_because: String,
 }
 
+/// Whether the effect of the action that implements a decision can be undone
+/// (ADR-0017). Wire form `"reversible" | "irreversible"`.
+///
+/// `Irreversible`: the executor cannot undo the effect within its own
+/// repository — deleting or mutating persistent data outside VCS, external
+/// side effects (publishing, sending, third-party API calls, payments), schema
+/// migrations without a verified down step, secret rotation. Anything rolled
+/// back by `git revert` or by dropping the worktree is `Reversible`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reversibility {
+    Reversible,
+    Irreversible,
+}
+
 /// A made-and-recorded decision (vision.md §10).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decision {
@@ -55,6 +70,10 @@ pub struct Decision {
     /// review.
     #[serde(default)]
     pub revisit_when: String,
+    /// Whether the decision's effect can be undone (ADR-0017). Absent means
+    /// "not classified", not "reversible".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reversibility: Option<Reversibility>,
     /// What this decision rests on (Sensemaking) and what it informs
     /// (Planning). See [`Link`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -106,6 +125,8 @@ pub struct NewDecision {
     pub consequences: Vec<String>,
     #[serde(default)]
     pub revisit_when: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reversibility: Option<Reversibility>,
     #[serde(default)]
     pub links: Vec<Link>,
 }
@@ -133,6 +154,7 @@ impl NewDecision {
             alternatives: self.alternatives,
             consequences: self.consequences,
             revisit_when: self.revisit_when,
+            reversibility: self.reversibility,
             links: self.links,
             created_at: now,
             updated_at: now,
@@ -158,6 +180,7 @@ mod tests {
             }],
             consequences: vec!["Operate a Postgres instance".into()],
             revisit_when: "if write throughput exceeds 50k/s".into(),
+            reversibility: None,
             links: vec![Link::Sensemaking {
                 reference: "insight-throughput".into(),
             }],
@@ -227,5 +250,25 @@ mod tests {
         n.decided_at = Some(earlier);
         let d = n.into_decision(time::now()).unwrap();
         assert_eq!(d.decided_at, earlier);
+    }
+
+    #[test]
+    fn reversibility_is_optional_on_the_wire() {
+        let d = sample().into_decision(time::now()).unwrap();
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("reversibility").is_none());
+
+        let mut legacy = json.clone();
+        legacy.as_object_mut().unwrap().remove("reversibility");
+        let back: Decision = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.reversibility, None);
+
+        let mut n = sample();
+        n.reversibility = Some(Reversibility::Irreversible);
+        let d = n.into_decision(time::now()).unwrap();
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["reversibility"], "irreversible");
+        let back: Decision = serde_json::from_value(json).unwrap();
+        assert_eq!(back.reversibility, Some(Reversibility::Irreversible));
     }
 }
