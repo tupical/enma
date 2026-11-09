@@ -215,6 +215,16 @@ async fn dispatch<P: enma::AiProvider>(
                         json!({"error": "not_decision_worthy", "kind": kind}),
                     ));
                 }
+                // ADR-0007 §2: unanswered questions stop the decision the same
+                // way the model's `decidable=false` does — 422 needs_input,
+                // before any AI call, nothing persisted.
+                let questions = enma::unanswered_questions(item);
+                if !questions.is_empty() {
+                    return Err((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        json!({"error": "needs_input", "questions": questions}),
+                    ));
+                }
             }
             let (provider, model) = ai.ok_or_else(|| {
                 (
@@ -414,6 +424,52 @@ mod tests {
                 body,
                 json!({"error": "not_decision_worthy", "kind": "hypothesis"})
             );
+        }
+        let listed = super::dispatch(
+            &store,
+            None::<(&OpenAiProvider, &str)>,
+            "enma.list",
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["decisions"], json!([]));
+    }
+
+    /// ADR-0007 §2: a question/research gap or an item with open questions
+    /// is answered by a human, not the model — 422 needs_input in both modes,
+    /// nothing persisted.
+    #[tokio::test]
+    async fn unanswered_questions_need_input_with_or_without_provider() {
+        let fake = successful_fake("Use Postgres", "Model guessed");
+        let store = test_store().await;
+        let cases = [
+            (
+                json!({"id": "sense_q", "kind": "question", "body": "Which DB?"}),
+                json!(["Which DB?"]),
+            ),
+            (
+                json!({"id": "sense_g", "kind": "research_gap", "body": "No load data"}),
+                json!(["No load data"]),
+            ),
+            (
+                json!({"id": "sense_o", "kind": "insight", "body": "hot keys",
+                       "open_questions": ["Who owns the cache?", ""]}),
+                json!(["Who owns the cache?"]),
+            ),
+        ];
+        for (item, questions) in cases {
+            let params = json!({"statement": "pick the storage", "sensing_item": item});
+            for ai in [Some((&fake, "test")), None] {
+                let (code, body) = super::dispatch(&store, ai, "enma.decide", params.clone())
+                    .await
+                    .unwrap_err();
+                assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+                assert_eq!(
+                    body,
+                    json!({"error": "needs_input", "questions": questions})
+                );
+            }
         }
         let listed = super::dispatch(
             &store,
